@@ -17,6 +17,7 @@ from typing import Optional, Dict, List
 
 class DownloadState(Enum):
     PENDING = "pending"
+    RETRYING = "retrying"
     LICENSE_REQUESTED = "license_requested"
     LICENSE_GRANTED = "license_granted"
     DOWNLOADING = "downloading"
@@ -98,9 +99,8 @@ class AudiobookDownloader:
         except IOError as e:
             print(f"Failed to save states: {e}")
     
-    def get_download_state(self, asin: str) -> DownloadState:
-        state_str = self.download_states.get(asin, {}).get('state', 'pending')
-        return DownloadState(state_str)
+    def get_download_state(self, asin: str) -> Dict:
+        return self.download_states.get(asin, {})
     
     def set_download_state(self, asin: str, state: DownloadState, **metadata):
         if asin not in self.download_states:
@@ -156,14 +156,14 @@ class AudiobookDownloader:
                 filename.unlink()
             raise e
     
-    async def download_book(self, book_asin: str, book_title: str, quality: str = "High") -> Optional[str]:
+    async def download_book(self, book_asin: str, book_title: str, quality: str = "High", cleanup_aax: bool = True, max_retries: int = 3) -> Optional[str]:
         if not self.auth:
             raise Exception("Authentication required.")
 
         paths = self._get_file_paths(book_title, book_asin)
         m4b_file = paths['m4b_file']
 
-        if self.get_download_state(book_asin) == DownloadState.CONVERTED and m4b_file.exists():
+        if self.get_download_state(book_asin).get('state') == DownloadState.CONVERTED.value and m4b_file.exists():
             print(f"✅ '{book_title}' already downloaded and converted.")
             return str(m4b_file)
         
@@ -172,15 +172,22 @@ class AudiobookDownloader:
         
         paths['aaxc_file'].parent.mkdir(parents=True, exist_ok=True)
         
-        async with self.download_semaphore:
-            try:
-                return await self._process_book_download(book_asin, book_title, quality, paths)
-            except Exception as e:
-                print(f"❌ Error downloading '{book_title}': {e}")
-                self.set_download_state(book_asin, DownloadState.ERROR, error=str(e))
-                return None
+        for attempt in range(max_retries):
+            async with self.download_semaphore:
+                try:
+                    return await self._process_book_download(book_asin, book_title, quality, paths, cleanup_aax)
+                except Exception as e:
+                    print(f"❌ Error downloading '{book_title}' on attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in 5 seconds...")
+                        self.set_download_state(book_asin, DownloadState.RETRYING, error=str(e), attempt=attempt + 1)
+                        await asyncio.sleep(5)
+                    else:
+                        self.set_download_state(book_asin, DownloadState.ERROR, error=str(e))
+                        return None
+        return None
     
-    async def _process_book_download(self, asin: str, title: str, quality: str, paths: Dict[str, Path]) -> Optional[str]:
+    async def _process_book_download(self, asin: str, title: str, quality: str, paths: Dict[str, Path], cleanup_aax: bool) -> Optional[str]:
         async with audible.AsyncClient(auth=self.auth) as client:
             aaxc_file = paths['aaxc_file']
 
@@ -216,7 +223,21 @@ class AudiobookDownloader:
             
             self.set_download_state(asin, DownloadState.CONVERTED)
             print(f"✅ '{title}' completed successfully!")
+
+            if cleanup_aax:
+                self._cleanup_temp_files(paths)
+
             return str(m4b_file)
+
+    def _cleanup_temp_files(self, paths: Dict[str, Path]):
+        print(f"🧹 Cleaning up temporary files for {paths['aaxc_file'].stem}")
+        for key, path in paths.items():
+            if key != 'm4b_file' and path.exists():
+                try:
+                    path.unlink()
+                    print(f"🗑️ Deleted {path.name}")
+                except OSError as e:
+                    print(f"Could not delete {path.name}: {e}")
 
     def _check_ffmpeg(self):
         try:
@@ -302,8 +323,7 @@ class AudiobookDownloader:
         except Exception as e:
             print(f"Could not add enhanced metadata: {e}")
 
-async def download_books(account_name, region, selected_books, quality="High"):
+async def download_books(account_name, region, selected_books, quality="High", cleanup_aax=True, max_retries=3):
     downloader = AudiobookDownloader(account_name, region)
-    tasks = [downloader.download_book(book['asin'], book['title'], book.get('quality', quality)) for book in selected_books]
+    tasks = [downloader.download_book(book['asin'], book['title'], book.get('quality', quality), cleanup_aax, max_retries) for book in selected_books]
     return await asyncio.gather(*tasks, return_exceptions=True)
-

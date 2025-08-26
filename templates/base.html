@@ -50,6 +50,34 @@
             border: 3px solid #28a745 !important;
             background-color: #d4edda !important;
         }
+        .view-switcher .btn {
+            background-color: #e9ecef;
+            border-color: #ced4da;
+            color: #495057;
+        }
+        .view-switcher .btn.active {
+            background-color: #007bff;
+            border-color: #007bff;
+            color: white;
+        }
+        .book-list-item {
+            display: flex;
+            align-items: center;
+            padding: 1rem;
+            border-bottom: 1px solid #dee2e6;
+            transition: background-color 0.2s;
+        }
+        .book-list-item:hover {
+            background-color: #f8f9fa;
+        }
+        .book-list-item .book-cover {
+            width: 50px;
+            height: 75px;
+            margin-right: 1rem;
+        }
+        .book-list-item .book-info {
+            flex-grow: 1;
+        }
     </style>
     
     {% block extra_css %}{% endblock %}
@@ -221,4 +249,4 @@
     
     {% block extra_js %}{% endblock %}
 </body>
-</html> 
+</html>

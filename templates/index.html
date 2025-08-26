@@ -39,7 +39,11 @@
             </div>
         </div>
         <div class="col-md-6 text-end">
-            <span id="bookCount" class="text-muted"></span>
+            <div class="btn-group view-switcher" role="group">
+                <button type="button" class="btn btn-secondary active" id="cardViewBtn" title="Card View"><i class="fas fa-th-large"></i></button>
+                <button type="button" class="btn btn-secondary" id="listViewBtn" title="List View"><i class="fas fa-list"></i></button>
+            </div>
+            <span id="bookCount" class="text-muted ms-3"></span>
         </div>
     </div>
     
@@ -53,6 +57,11 @@
     
     <!-- Library Grid -->
     <div id="libraryGrid" class="row g-4">
+        <!-- Books will be dynamically loaded here -->
+    </div>
+
+    <!-- Library List -->
+    <div id="libraryList" class="list-group" style="display: none;">
         <!-- Books will be dynamically loaded here -->
     </div>
     
@@ -87,6 +96,9 @@
 
 {% block extra_js %}
 <script>
+    let currentView = 'card';
+    let downloadStatusInterval = null;
+
     // Load accounts on page load
     async function loadAccounts() {
         try {
@@ -105,6 +117,7 @@
             const option = document.createElement('option');
             option.value = accountName;
             option.textContent = accountName;
+            option.dataset.region = accounts[accountName].region;
             select.appendChild(option);
         });
     }
@@ -150,6 +163,10 @@
         document.getElementById('searchInput').addEventListener('input', function() {
             searchBooks(this.value);
         });
+
+        // View switcher
+        document.getElementById('cardViewBtn').addEventListener('click', () => switchView('card'));
+        document.getElementById('listViewBtn').addEventListener('click', () => switchView('list'));
     }
     
     async function selectAccount(accountName) {
@@ -221,7 +238,7 @@
         if (!currentAccount) return;
         
         const btn = document.getElementById('refreshLibraryBtn');
-        const originalText = btn.innerHTML;
+        btn.setAttribute('data-original-text', btn.innerHTML);
         showLoading(btn, true);
         
         showLoadingSpinner('Loading your Audible library...');
@@ -289,23 +306,43 @@
         library = [];
         selectedBooks.clear();
     }
+
+    function switchView(view) {
+        currentView = view;
+        document.getElementById('cardViewBtn').classList.toggle('active', view === 'card');
+        document.getElementById('listViewBtn').classList.toggle('active', view === 'list');
+        displayLibrary(library);
+    }
     
     function displayLibrary(books) {
         const grid = document.getElementById('libraryGrid');
+        const list = document.getElementById('libraryList');
         const countSpan = document.getElementById('bookCount');
         
         if (books.length === 0) {
             document.getElementById('noBooksMessage').style.display = 'block';
             grid.style.display = 'none';
+            list.style.display = 'none';
         } else {
             document.getElementById('noBooksMessage').style.display = 'none';
-            grid.style.display = 'flex';
-            
             grid.innerHTML = '';
-            books.forEach(book => {
-                const bookCard = createBookCard(book);
-                grid.appendChild(bookCard);
-            });
+            list.innerHTML = '';
+
+            if (currentView === 'card') {
+                grid.style.display = 'flex';
+                list.style.display = 'none';
+                books.forEach(book => {
+                    const bookCard = createBookCard(book);
+                    grid.appendChild(bookCard);
+                });
+            } else {
+                grid.style.display = 'none';
+                list.style.display = 'block';
+                books.forEach(book => {
+                    const bookItem = createBookListItem(book);
+                    list.appendChild(bookItem);
+                });
+            }
         }
         
         countSpan.textContent = `Showing ${books.length} books`;
@@ -313,7 +350,7 @@
     
     function createBookCard(book) {
         const col = document.createElement('div');
-        col.className = 'col-md-6 col-lg-4 col-xl-3';
+        col.className = 'col-md-4 col-lg-3 col-xl-2';
         
         const hours = Math.floor(book.length_mins / 60);
         const minutes = book.length_mins % 60;
@@ -321,43 +358,75 @@
         
         col.innerHTML = `
             <div class="card book-card" data-asin="${book.asin}">
+                <div class="status-overlay"></div>
+                <input class="form-check-input book-checkbox position-absolute top-0 start-0 m-2" type="checkbox" id="book_${book.asin}" data-asin="${book.asin}">
                 <img src="${book.cover_url || 'https://via.placeholder.com/150x200?text=No+Cover'}" 
                      class="card-img-top book-cover" alt="${book.title}">
                 <div class="card-body">
                     <h6 class="card-title">${book.title}</h6>
                     <p class="card-text text-muted">${book.authors}</p>
-                    ${book.narrator ? `<small class="text-muted">Narrated by: ${book.narrator}</small><br>` : ''}
-                    <small class="text-muted">Length: ${duration}</small>
-                    ${book.series ? `<br><small class="text-muted">Series: ${book.series}</small>` : ''}
-                </div>
-                <div class="card-footer">
-                    <div class="form-check">
-                        <input class="form-check-input book-checkbox" type="checkbox" 
-                               id="book_${book.asin}" data-asin="${book.asin}">
-                        <label class="form-check-label" for="book_${book.asin}">
-                            Select for download
-                        </label>
-                    </div>
                 </div>
             </div>
         `;
         
-        // Add checkbox event listener
-        const checkbox = col.querySelector('.book-checkbox');
-        checkbox.addEventListener('change', function() {
-            toggleBookSelection(book.asin, this.checked);
+        const card = col.querySelector('.book-card');
+        card.addEventListener('click', () => {
+            const checkbox = card.querySelector('.book-checkbox');
+            checkbox.checked = !checkbox.checked;
+            toggleBookSelection(book.asin, checkbox.checked);
         });
         
         return col;
     }
+
+    function createBookListItem(book) {
+        const item = document.createElement('div');
+        item.className = 'list-group-item book-list-item';
+        item.dataset.asin = book.asin;
+
+        const hours = Math.floor(book.length_mins / 60);
+        const minutes = book.length_mins % 60;
+        const duration = book.length_mins ? `${hours}h ${minutes}m` : 'Unknown';
+
+        item.innerHTML = `
+            <input class="form-check-input book-checkbox me-3" type="checkbox" id="list_book_${book.asin}" data-asin="${book.asin}">
+            <img src="${book.cover_url || 'https://via.placeholder.com/50x75?text=No+Cover'}" class="book-cover" alt="${book.title}">
+            <div class="book-info">
+                <h6 class="mb-1">${book.title}</h6>
+                <p class="mb-1 text-muted">${book.authors}</p>
+                <small class="text-muted">Length: ${duration}</small>
+            </div>
+            <div class="status-text"></div>
+        `;
+
+        item.addEventListener('click', (e) => {
+            if (e.target.type !== 'checkbox') {
+                const checkbox = item.querySelector('.book-checkbox');
+                checkbox.checked = !checkbox.checked;
+                toggleBookSelection(book.asin, checkbox.checked);
+            }
+        });
+
+        const checkbox = item.querySelector('.book-checkbox');
+        checkbox.addEventListener('change', function() {
+            toggleBookSelection(book.asin, this.checked);
+        });
+
+        return item;
+    }
     
     function toggleBookSelection(asin, selected) {
+        const card = document.querySelector(`.book-card[data-asin="${asin}"]`);
+        const listItem = document.querySelector(`.book-list-item[data-asin="${asin}"]`);
+
         if (selected) {
             selectedBooks.add(asin);
-            document.querySelector(`[data-asin="${asin}"]`).classList.add('book-selected');
+            if (card) card.classList.add('book-selected');
+            if (listItem) listItem.classList.add('book-selected');
         } else {
             selectedBooks.delete(asin);
-            document.querySelector(`[data-asin="${asin}"]`).classList.remove('book-selected');
+            if (card) card.classList.remove('book-selected');
+            if (listItem) listItem.classList.remove('book-selected');
         }
         
         updateDownloadButton();
@@ -381,8 +450,8 @@
         document.querySelectorAll('.book-checkbox').forEach(checkbox => {
             checkbox.checked = false;
         });
-        document.querySelectorAll('.book-card').forEach(card => {
-            card.classList.remove('book-selected');
+        document.querySelectorAll('.book-card, .book-list-item').forEach(item => {
+            item.classList.remove('book-selected');
         });
         updateDownloadButton();
     }
@@ -419,10 +488,80 @@
             });
             
             showAlert(result.message, 'success');
-            clearSelection();
+            startDownloadStatusChecker();
             
         } catch (error) {
             showAlert('Download failed: ' + error.message, 'danger');
+        }
+    }
+
+    function startDownloadStatusChecker() {
+        if (downloadStatusInterval) {
+            clearInterval(downloadStatusInterval);
+        }
+
+        downloadStatusInterval = setInterval(async () => {
+            let activeDownloads = false;
+            for (const asin of selectedBooks) {
+                try {
+                    const status = await apiCall(`/api/download/status/${asin}`);
+                    updateBookStatus(asin, status);
+                    if (status.state !== 'converted' && status.state !== 'error') {
+                        activeDownloads = true;
+                    }
+                } catch (error) {
+                    console.error(`Failed to get status for ${asin}:`, error);
+                }
+            }
+
+            if (!activeDownloads) {
+                clearInterval(downloadStatusInterval);
+                download_status_interval = null;
+            }
+        }, 2000);
+    }
+
+    function updateBookStatus(asin, status) {
+        const card = document.querySelector(`.book-card[data-asin="${asin}"]`);
+        const listItem = document.querySelector(`.book-list-item[data-asin="${asin}"]`);
+
+        let statusText = '';
+        switch (status.state) {
+            case 'pending':
+                statusText = 'Pending...';
+                break;
+            case 'retrying':
+                statusText = `Retrying (${status.attempt}/3)...`;
+                break;
+            case 'license_requested':
+            case 'license_granted':
+                statusText = 'Requesting license...';
+                break;
+            case 'downloading':
+                statusText = 'Downloading...';
+                break;
+            case 'download_complete':
+                statusText = 'Download complete';
+                break;
+            case 'decrypting':
+                statusText = 'Decrypting...';
+                break;
+            case 'converted':
+                statusText = 'Converted';
+                break;
+            case 'error':
+                statusText = `Error: ${status.error}`;
+                break;
+        }
+
+        if (card) {
+            const overlay = card.querySelector('.status-overlay');
+            overlay.textContent = statusText;
+            overlay.style.display = 'block';
+        }
+        if (listItem) {
+            const statusEl = listItem.querySelector('.status-text');
+            statusEl.textContent = statusText;
         }
     }
     
@@ -430,11 +569,16 @@
         document.getElementById('loadingSpinner').style.display = 'block';
         document.getElementById('loadingText').textContent = text;
         document.getElementById('libraryGrid').style.display = 'none';
+        document.getElementById('libraryList').style.display = 'none';
     }
     
     function hideLoadingSpinner() {
         document.getElementById('loadingSpinner').style.display = 'none';
-        document.getElementById('libraryGrid').style.display = 'flex';
+        if (currentView === 'card') {
+            document.getElementById('libraryGrid').style.display = 'flex';
+        } else {
+            document.getElementById('libraryList').style.display = 'block';
+        }
     }
 </script>
-{% endblock %} 
+{% endblock %}
