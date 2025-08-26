@@ -108,6 +108,24 @@ class AudiobookDownloader:
         self.download_states[asin].update({'state': state.value, 'timestamp': time.time(), **metadata})
         self._save_states()
     
+    def update_download_progress(self, asin: str, downloaded_bytes: int, total_bytes: int = None, **metadata):
+        """Update download progress without changing state"""
+        if asin not in self.download_states:
+            self.download_states[asin] = {}
+        
+        progress_data = {
+            'downloaded_bytes': downloaded_bytes,
+            'progress_timestamp': time.time(),
+            **metadata
+        }
+        
+        if total_bytes is not None:
+            progress_data['total_bytes'] = total_bytes
+            progress_data['progress_percent'] = min(100, (downloaded_bytes / total_bytes) * 100) if total_bytes > 0 else 0
+        
+        self.download_states[asin].update(progress_data)
+        self._save_states()
+    
     def _sanitize_filename(self, filename):
         return re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', '_', filename)[:200]
     
@@ -141,16 +159,30 @@ class AudiobookDownloader:
         except KeyError as e:
             raise Exception(f"Could not extract download URL from license: {e}")
     
-    async def _download_file(self, url: str, filename: Path):
+    async def _download_file(self, url: str, filename: Path, asin: str = None):
         headers = {"User-Agent": "Audible/671 CFNetwork/1240.0.4 Darwin/20.6.0"}
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
+                    
+                    # Get total file size from headers
+                    total_bytes = None
+                    content_length = response.headers.get('content-length')
+                    if content_length:
+                        total_bytes = int(content_length)
+                    
                     filename.parent.mkdir(parents=True, exist_ok=True)
+                    downloaded_bytes = 0
+                    
                     with open(filename, "wb") as f:
                         async for chunk in response.aiter_bytes(chunk_size=8192):
                             f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            
+                            # Update progress if we have an asin
+                            if asin:
+                                self.update_download_progress(asin, downloaded_bytes, total_bytes)
         except Exception as e:
             if filename.exists():
                 filename.unlink()
@@ -198,7 +230,7 @@ class AudiobookDownloader:
                 
                 self.set_download_state(asin, DownloadState.DOWNLOADING)
                 download_url = self._get_download_url(license_response)
-                await self._download_file(download_url, aaxc_file)
+                await self._download_file(download_url, aaxc_file, asin)
                 
                 if not aaxc_file.exists() or aaxc_file.stat().st_size == 0:
                     raise Exception("Download failed: file is missing or empty.")

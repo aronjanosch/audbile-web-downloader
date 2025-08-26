@@ -395,6 +395,13 @@
                 <h6 class="mb-1">${book.title}</h6>
                 <p class="mb-1 text-muted">${book.authors}</p>
                 <small class="text-muted">Length: ${duration}</small>
+                <div class="progress-container mt-2" style="display: none;">
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <small class="progress-text text-muted mt-1"></small>
+                </div>
             </div>
             <div class="status-text"></div>
         `;
@@ -478,6 +485,9 @@
         
         const cleanupAax = document.getElementById('cleanupAax').checked;
         
+        // Start status checker immediately before making the download request
+        startDownloadStatusChecker();
+        
         try {
             const result = await apiCall('/api/download/books', {
                 method: 'POST',
@@ -488,10 +498,14 @@
             });
             
             showAlert(result.message, 'success');
-            startDownloadStatusChecker();
             
         } catch (error) {
             showAlert('Download failed: ' + error.message, 'danger');
+            // Stop the status checker if download failed to start
+            if (downloadStatusInterval) {
+                clearInterval(downloadStatusInterval);
+                downloadStatusInterval = null;
+            }
         }
     }
 
@@ -501,64 +515,89 @@
         }
 
         downloadStatusInterval = setInterval(async () => {
-            let activeDownloads = false;
-            for (const asin of selectedBooks) {
-                try {
-                    const status = await apiCall(`/api/download/status/${asin}`);
-                    updateBookStatus(asin, status);
-                    if (status.state !== 'converted' && status.state !== 'error') {
-                        activeDownloads = true;
-                    }
-                } catch (error) {
-                    console.error(`Failed to get status for ${asin}:`, error);
-                }
-            }
+            try {
+                // Get progress for all downloads
+                const progressData = await apiCall('/api/download/progress');
+                let activeDownloads = false;
 
-            if (!activeDownloads) {
-                clearInterval(downloadStatusInterval);
-                download_status_interval = null;
+                // Update progress for all books that have any download state (not just selected ones)
+                if (progressData && typeof progressData === 'object') {
+                    for (const [asin, progress] of Object.entries(progressData)) {
+                        updateBookProgress(asin, progress);
+                        if (!['converted', 'error'].includes(progress.state)) {
+                            activeDownloads = true;
+                        }
+                    }
+                }
+
+                if (!activeDownloads) {
+                    clearInterval(downloadStatusInterval);
+                    downloadStatusInterval = null;
+                }
+            } catch (error) {
+                console.error('Failed to get download progress:', error);
             }
-        }, 2000);
+        }, 1000); // Check every second for better responsiveness
     }
 
-    function updateBookStatus(asin, status) {
+    function updateBookProgress(asin, progressInfo) {
         const card = document.querySelector(`.book-card[data-asin="${asin}"]`);
         const listItem = document.querySelector(`.book-list-item[data-asin="${asin}"]`);
 
+        if (!card && !listItem) return;
+        
+        console.log(`Updating ${asin}: ${progressInfo.state} - ${progressInfo.progress_percent}%`);
+
         let statusText = '';
-        switch (status.state) {
+        let progressPercent = progressInfo.progress_percent || 0;
+        
+        switch (progressInfo.state) {
             case 'pending':
                 statusText = 'Pending...';
                 break;
-            case 'retrying':
-                statusText = `Retrying (${status.attempt}/3)...`;
-                break;
             case 'license_requested':
-            case 'license_granted':
                 statusText = 'Requesting license...';
                 break;
+            case 'license_granted':
+                statusText = 'License granted';
+                break;
             case 'downloading':
-                statusText = 'Downloading...';
+                if (progressInfo.total_bytes && progressInfo.downloaded_bytes) {
+                    const mbDownloaded = (progressInfo.downloaded_bytes / 1024 / 1024).toFixed(1);
+                    const mbTotal = (progressInfo.total_bytes / 1024 / 1024).toFixed(1);
+                    statusText = `${Math.round(progressPercent)}% (${mbDownloaded}/${mbTotal} MB)`;
+                } else {
+                    statusText = 'Downloading...';
+                }
                 break;
             case 'download_complete':
                 statusText = 'Download complete';
                 break;
             case 'decrypting':
-                statusText = 'Decrypting...';
+                statusText = 'Converting...';
                 break;
             case 'converted':
-                statusText = 'Converted';
+                statusText = '✅ Complete';
                 break;
             case 'error':
-                statusText = `Error: ${status.error}`;
+                statusText = `❌ Error`;
                 break;
+            default:
+                statusText = progressInfo.state;
         }
 
+        // Update card view - simple status overlay
         if (card) {
             const overlay = card.querySelector('.status-overlay');
-            overlay.textContent = statusText;
-            overlay.style.display = 'block';
+            if (progressInfo.state === 'converted') {
+                overlay.style.display = 'none';
+            } else {
+                overlay.textContent = statusText;
+                overlay.style.display = 'flex';
+            }
         }
+
+        // Update list view
         if (listItem) {
             const statusEl = listItem.querySelector('.status-text');
             statusEl.textContent = statusText;
