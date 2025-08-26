@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Audible Login - {{ account_name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h4>Audible Login - {{ account_name }}</h4>
+                </div>
+                <div class="card-body">
+                    <div id="step1" class="mb-4">
+                        <h5>Step 1: Login to Amazon/Audible</h5>
+                        <p>Click the button below to open the Audible login page in a new tab:</p>
+                        <a href="{{ oauth_url }}" target="_blank" class="btn btn-primary btn-lg">
+                            Open Audible Login
+                        </a>
+                        <div class="mt-3">
+                            <small class="text-muted">
+                                After clicking, you'll be redirected to Amazon's login page. 
+                                Complete the login process in the new tab.
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div id="step2" class="mb-4">
+                        <h5>Step 2: Copy the Result URL</h5>
+                        <p>After logging in, you'll see an error page. This is normal! Copy the entire URL from the address bar and paste it below:</p>
+                        <div class="mb-3">
+                            <label for="responseUrl" class="form-label">Response URL:</label>
+                            <input type="text" class="form-control" id="responseUrl" placeholder="https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=...">
+                            <div class="form-text">
+                                The URL should contain "openid.oa2.authorization_code" parameter
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-success" onclick="submitLogin()">
+                            Complete Login
+                        </button>
+                    </div>
+                    
+                    <div id="status" class="mt-4">
+                        <div class="alert alert-info d-none" id="statusMessage"></div>
+                        <div class="spinner-border d-none" id="loadingSpinner" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let sessionId = '{{ session_id }}';
+let checkStatusInterval;
+
+function submitLogin() {
+    let responseUrl = document.getElementById('responseUrl').value.trim();
+    
+    if (!responseUrl) {
+        showStatus('Please enter the response URL', 'danger');
+        return;
+    }
+    
+    if (!responseUrl.includes('openid.oa2.authorization_code')) {
+        showStatus('Invalid URL. Make sure it contains the authorization code.', 'warning');
+        return;
+    }
+    
+    showStatus('Processing login...', 'info');
+    document.getElementById('loadingSpinner').classList.remove('d-none');
+    
+    fetch(`/auth/callback/${sessionId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            response_url: responseUrl
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            startStatusCheck();
+        } else {
+            showStatus(data.error || 'Login failed', 'danger');
+            document.getElementById('loadingSpinner').classList.add('d-none');
+        }
+    })
+    .catch(error => {
+        showStatus('Network error: ' + error.message, 'danger');
+        document.getElementById('loadingSpinner').classList.add('d-none');
+    });
+}
+
+function startStatusCheck() {
+    checkStatusInterval = setInterval(checkStatus, 2000);
+}
+
+function checkStatus() {
+    fetch(`/auth/status/${sessionId}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success !== undefined) {
+            clearInterval(checkStatusInterval);
+            document.getElementById('loadingSpinner').classList.add('d-none');
+            
+            if (data.success) {
+                showStatus(data.message, 'success');
+                setTimeout(() => {
+                    if (data.redirect) {
+                        window.location.href = data.redirect;
+                    } else {
+                        window.location.href = '/';
+                    }
+                }, 2000);
+            } else {
+                showStatus(data.error, 'danger');
+            }
+        } else if (data.status === 'pending') {
+            // Still processing
+        }
+    })
+    .catch(error => {
+        console.error('Status check error:', error);
+    });
+}
+
+function showStatus(message, type) {
+    let statusDiv = document.getElementById('statusMessage');
+    statusDiv.className = `alert alert-${type}`;
+    statusDiv.textContent = message;
+    statusDiv.classList.remove('d-none');
+}
+
+// Clean up interval when page unloads
+window.addEventListener('beforeunload', function() {
+    if (checkStatusInterval) {
+        clearInterval(checkStatusInterval);
+    }
+});
+</script>
+{% endblock %}

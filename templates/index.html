@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+
+{% block title %}Audible Book Downloader - Library{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-2">
+            <i class="fas fa-book-open"></i> Your Audible Library
+        </h1>
+        <p class="text-muted">Simple cross-platform Audible audiobook downloader and converter</p>
+    </div>
+    <div id="accountInfo" style="display: none;">
+        <div class="text-end">
+            <h5 id="currentAccountName"></h5>
+            <small id="currentAccountRegion" class="text-muted"></small>
+        </div>
+    </div>
+</div>
+
+<!-- Welcome Message -->
+<div id="welcomeMessage" class="text-center py-5">
+    <i class="fas fa-book fa-3x text-muted mb-3"></i>
+    <h3>Welcome to Audible Book Downloader</h3>
+    <p class="text-muted">Please select or add an Audible account to get started.</p>
+</div>
+
+<!-- Library Content -->
+<div id="libraryContent" style="display: none;">
+    <!-- Search Bar -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="input-group">
+                <span class="input-group-text">
+                    <i class="fas fa-search"></i>
+                </span>
+                <input type="text" class="form-control" id="searchInput" 
+                       placeholder="Search books by title or author...">
+            </div>
+        </div>
+        <div class="col-md-6 text-end">
+            <span id="bookCount" class="text-muted"></span>
+        </div>
+    </div>
+    
+    <!-- Loading Spinner -->
+    <div id="loadingSpinner" class="text-center py-5" style="display: none;">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-3" id="loadingText">Loading your library...</p>
+    </div>
+    
+    <!-- Library Grid -->
+    <div id="libraryGrid" class="row g-4">
+        <!-- Books will be dynamically loaded here -->
+    </div>
+    
+    <!-- No Books Message -->
+    <div id="noBooksMessage" class="text-center py-5" style="display: none;">
+        <i class="fas fa-book fa-2x text-muted mb-3"></i>
+        <h4>No books found</h4>
+        <p class="text-muted">Click 'Refresh Library' to load your audiobooks.</p>
+    </div>
+</div>
+
+<!-- Download Progress Modal -->
+<div class="modal fade" id="downloadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-download"></i> Downloading Books
+                </h5>
+            </div>
+            <div class="modal-body">
+                <div class="progress mb-3">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                         role="progressbar" style="width: 0%"></div>
+                </div>
+                <p id="downloadStatus">Preparing download...</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Load accounts on page load
+    async function loadAccounts() {
+        try {
+            const accounts = await apiCall('/api/accounts');
+            updateAccountSelector(accounts);
+        } catch (error) {
+            showAlert('Failed to load accounts: ' + error.message, 'danger');
+        }
+    }
+    
+    function updateAccountSelector(accounts) {
+        const select = document.getElementById('accountSelect');
+        select.innerHTML = '<option value="">Select an account...</option>';
+        
+        Object.keys(accounts).forEach(accountName => {
+            const option = document.createElement('option');
+            option.value = accountName;
+            option.textContent = accountName;
+            select.appendChild(option);
+        });
+    }
+    
+    function setupEventListeners() {
+        // Account selection
+        document.getElementById('accountSelect').addEventListener('change', function() {
+            const accountName = this.value;
+            if (accountName) {
+                selectAccount(accountName);
+            } else {
+                hideAccountInfo();
+            }
+        });
+        
+        // Add account form
+        document.getElementById('addAccountForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            addAccount();
+        });
+        
+        // Authentication
+        document.getElementById('authenticateBtn').addEventListener('click', function() {
+            authenticateAccount();
+        });
+        
+        // Refresh library
+        document.getElementById('refreshLibraryBtn').addEventListener('click', function() {
+            fetchLibrary();
+        });
+        
+        // Download
+        document.getElementById('downloadBtn').addEventListener('click', function() {
+            downloadSelectedBooks();
+        });
+        
+        // Clear selection
+        document.getElementById('clearSelectionBtn').addEventListener('click', function() {
+            clearSelection();
+        });
+        
+        // Search
+        document.getElementById('searchInput').addEventListener('input', function() {
+            searchBooks(this.value);
+        });
+    }
+    
+    async function selectAccount(accountName) {
+        try {
+            await apiCall(`/api/accounts/${accountName}/select`, {
+                method: 'POST'
+            });
+            
+            currentAccount = accountName;
+            showAccountInfo(accountName);
+            checkAuthentication(accountName);
+        } catch (error) {
+            showAlert('Failed to select account: ' + error.message, 'danger');
+        }
+    }
+    
+    async function addAccount() {
+        const accountName = document.getElementById('accountName').value;
+        const region = document.getElementById('accountRegion').value;
+        
+        if (!accountName) {
+            showAlert('Please enter an account name', 'warning');
+            return;
+        }
+        
+        try {
+            const result = await apiCall('/api/accounts', {
+                method: 'POST',
+                body: JSON.stringify({
+                    account_name: accountName,
+                    region: region
+                })
+            });
+            
+            showAlert('Account added successfully!', 'success');
+            document.getElementById('addAccountForm').reset();
+            
+            // Reload accounts and select the new one
+            await loadAccounts();
+            document.getElementById('accountSelect').value = accountName;
+            selectAccount(accountName);
+            
+        } catch (error) {
+            showAlert('Failed to add account: ' + error.message, 'danger');
+        }
+    }
+    
+    async function checkAuthentication(accountName) {
+        try {
+            const result = await apiCall('/api/auth/check', {
+                method: 'POST',
+                body: JSON.stringify({ account_name: accountName })
+            });
+            
+            updateAuthStatus(result.authenticated);
+        } catch (error) {
+            showAlert('Failed to check authentication: ' + error.message, 'danger');
+        }
+    }
+    
+    async function authenticateAccount() {
+        if (!currentAccount) return;
+        
+        // Redirect to web-based login flow
+        window.location.href = `/auth/login/${currentAccount}`;
+    }
+    
+    async function fetchLibrary() {
+        if (!currentAccount) return;
+        
+        const btn = document.getElementById('refreshLibraryBtn');
+        const originalText = btn.innerHTML;
+        showLoading(btn, true);
+        
+        showLoadingSpinner('Loading your Audible library...');
+        
+        try {
+            const result = await apiCall('/api/library/fetch', {
+                method: 'POST',
+                body: JSON.stringify({ account_name: currentAccount })
+            });
+            
+            library = result.library;
+            displayLibrary(library);
+            showAlert(`Loaded ${library.length} books!`, 'success');
+            
+        } catch (error) {
+            showAlert('Failed to load library: ' + error.message, 'danger');
+        } finally {
+            showLoading(btn, false);
+            hideLoadingSpinner();
+        }
+    }
+    
+    function updateAuthStatus(isAuthenticated) {
+        const statusDiv = document.getElementById('authStatus');
+        const authBtn = document.getElementById('authenticateBtn');
+        const refreshBtn = document.getElementById('refreshLibraryBtn');
+        
+        if (isAuthenticated) {
+            statusDiv.className = 'alert alert-success';
+            statusDiv.innerHTML = '<i class="fas fa-check-circle"></i> Authenticated';
+            authBtn.style.display = 'none';
+            refreshBtn.style.display = 'block';
+            document.getElementById('downloadControls').style.display = 'block';
+        } else {
+            statusDiv.className = 'alert alert-warning';
+            statusDiv.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Not authenticated';
+            authBtn.style.display = 'block';
+            refreshBtn.style.display = 'none';
+            document.getElementById('downloadControls').style.display = 'none';
+        }
+    }
+    
+    function showAccountInfo(accountName) {
+        document.getElementById('welcomeMessage').style.display = 'none';
+        document.getElementById('libraryContent').style.display = 'block';
+        document.getElementById('accountStatus').style.display = 'block';
+        document.getElementById('accountInfo').style.display = 'block';
+        document.getElementById('currentAccountName').textContent = accountName;
+        
+        // Get region from accounts
+        const select = document.getElementById('accountSelect');
+        const option = select.querySelector(`option[value="${accountName}"]`);
+        if (option) {
+            const region = option.getAttribute('data-region') || 'Unknown';
+            document.getElementById('currentAccountRegion').textContent = `Region: ${region.toUpperCase()}`;
+        }
+    }
+    
+    function hideAccountInfo() {
+        document.getElementById('welcomeMessage').style.display = 'block';
+        document.getElementById('libraryContent').style.display = 'none';
+        document.getElementById('accountStatus').style.display = 'none';
+        document.getElementById('accountInfo').style.display = 'none';
+        currentAccount = null;
+        library = [];
+        selectedBooks.clear();
+    }
+    
+    function displayLibrary(books) {
+        const grid = document.getElementById('libraryGrid');
+        const countSpan = document.getElementById('bookCount');
+        
+        if (books.length === 0) {
+            document.getElementById('noBooksMessage').style.display = 'block';
+            grid.style.display = 'none';
+        } else {
+            document.getElementById('noBooksMessage').style.display = 'none';
+            grid.style.display = 'flex';
+            
+            grid.innerHTML = '';
+            books.forEach(book => {
+                const bookCard = createBookCard(book);
+                grid.appendChild(bookCard);
+            });
+        }
+        
+        countSpan.textContent = `Showing ${books.length} books`;
+    }
+    
+    function createBookCard(book) {
+        const col = document.createElement('div');
+        col.className = 'col-md-6 col-lg-4 col-xl-3';
+        
+        const hours = Math.floor(book.length_mins / 60);
+        const minutes = book.length_mins % 60;
+        const duration = book.length_mins ? `${hours}h ${minutes}m` : 'Unknown';
+        
+        col.innerHTML = `
+            <div class="card book-card" data-asin="${book.asin}">
+                <img src="${book.cover_url || 'https://via.placeholder.com/150x200?text=No+Cover'}" 
+                     class="card-img-top book-cover" alt="${book.title}">
+                <div class="card-body">
+                    <h6 class="card-title">${book.title}</h6>
+                    <p class="card-text text-muted">${book.authors}</p>
+                    ${book.narrator ? `<small class="text-muted">Narrated by: ${book.narrator}</small><br>` : ''}
+                    <small class="text-muted">Length: ${duration}</small>
+                    ${book.series ? `<br><small class="text-muted">Series: ${book.series}</small>` : ''}
+                </div>
+                <div class="card-footer">
+                    <div class="form-check">
+                        <input class="form-check-input book-checkbox" type="checkbox" 
+                               id="book_${book.asin}" data-asin="${book.asin}">
+                        <label class="form-check-label" for="book_${book.asin}">
+                            Select for download
+                        </label>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Add checkbox event listener
+        const checkbox = col.querySelector('.book-checkbox');
+        checkbox.addEventListener('change', function() {
+            toggleBookSelection(book.asin, this.checked);
+        });
+        
+        return col;
+    }
+    
+    function toggleBookSelection(asin, selected) {
+        if (selected) {
+            selectedBooks.add(asin);
+            document.querySelector(`[data-asin="${asin}"]`).classList.add('book-selected');
+        } else {
+            selectedBooks.delete(asin);
+            document.querySelector(`[data-asin="${asin}"]`).classList.remove('book-selected');
+        }
+        
+        updateDownloadButton();
+    }
+    
+    function updateDownloadButton() {
+        const downloadBtn = document.getElementById('downloadBtn');
+        const count = selectedBooks.size;
+        
+        if (count > 0) {
+            downloadBtn.innerHTML = `<i class="fas fa-download"></i> Download Selected (${count})`;
+            downloadBtn.disabled = false;
+        } else {
+            downloadBtn.innerHTML = `<i class="fas fa-download"></i> Download Selected`;
+            downloadBtn.disabled = true;
+        }
+    }
+    
+    function clearSelection() {
+        selectedBooks.clear();
+        document.querySelectorAll('.book-checkbox').forEach(checkbox => {
+            checkbox.checked = false;
+        });
+        document.querySelectorAll('.book-card').forEach(card => {
+            card.classList.remove('book-selected');
+        });
+        updateDownloadButton();
+    }
+    
+    function searchBooks(query) {
+        if (!query.trim()) {
+            displayLibrary(library);
+            return;
+        }
+        
+        const filtered = library.filter(book => 
+            book.title.toLowerCase().includes(query.toLowerCase()) ||
+            book.authors.toLowerCase().includes(query.toLowerCase())
+        );
+        
+        displayLibrary(filtered);
+    }
+    
+    async function downloadSelectedBooks() {
+        if (selectedBooks.size === 0) {
+            showAlert('Please select books to download', 'warning');
+            return;
+        }
+        
+        const cleanupAax = document.getElementById('cleanupAax').checked;
+        
+        try {
+            const result = await apiCall('/api/download/books', {
+                method: 'POST',
+                body: JSON.stringify({
+                    selected_asins: Array.from(selectedBooks),
+                    cleanup_aax: cleanupAax
+                })
+            });
+            
+            showAlert(result.message, 'success');
+            clearSelection();
+            
+        } catch (error) {
+            showAlert('Download failed: ' + error.message, 'danger');
+        }
+    }
+    
+    function showLoadingSpinner(text) {
+        document.getElementById('loadingSpinner').style.display = 'block';
+        document.getElementById('loadingText').textContent = text;
+        document.getElementById('libraryGrid').style.display = 'none';
+    }
+    
+    function hideLoadingSpinner() {
+        document.getElementById('loadingSpinner').style.display = 'none';
+        document.getElementById('libraryGrid').style.display = 'flex';
+    }
+</script>
+{% endblock %} 
